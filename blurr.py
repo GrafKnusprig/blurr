@@ -17,6 +17,9 @@ blur_fields = []        # List of effect fields (each: list of 4 points in origi
 active_field = []       # Currently being defined field
 adding_mode = False     # True when adding a new field
 
+# Store current file path for overwriting
+current_file_path = None
+
 # Global Tk root for file dialogs
 tk_root = tk.Tk()
 tk_root.withdraw()
@@ -27,7 +30,7 @@ pan_x, pan_y = 0, 0
 is_dragging = False
 drag_start = (0, 0)
 initial_pan = (0, 0)
-click_start = None  # To distinguish a click from a drag in adding mode
+click_start = None  # To distinguish click from drag in adding mode
 
 # Effect mode: "blur" or "pixelate"
 effect_mode = "blur"
@@ -68,10 +71,8 @@ def apply_perspective_effect(img, pts, ksize):
         effect_warped = cv2.GaussianBlur(warped, (ksize, ksize), 0)
     elif effect_mode == "pixelate":
         pixel_factor = max(1, ksize // 10)
-        small = cv2.resize(warped, (maxWidth // pixel_factor, maxHeight // pixel_factor),
-                           interpolation=cv2.INTER_LINEAR)
-        effect_warped = cv2.resize(small, (maxWidth, maxHeight),
-                                   interpolation=cv2.INTER_NEAREST)
+        small = cv2.resize(warped, (maxWidth // pixel_factor, maxHeight // pixel_factor), interpolation=cv2.INTER_LINEAR)
+        effect_warped = cv2.resize(small, (maxWidth, maxHeight), interpolation=cv2.INTER_NEAREST)
     else:
         effect_warped = warped
 
@@ -88,9 +89,7 @@ def update_preview():
     if orig_img is None:
         return
     result = orig_img.copy()
-
     # Get kernel value from trackbar and scale it based on original image width.
-    # Here, we use a reference width of 1000 pixels.
     k_val = cv2.getTrackbarPos("Kernel", window_name)
     if k_val < 1:
         k_val = 1
@@ -106,7 +105,7 @@ def update_preview():
         result = apply_perspective_effect(result, field, ksize)
     if active_field:
         pts_array = np.array(active_field, dtype=int)
-        marker_scale = scale_factor  # use same scale for markers
+        marker_scale = scale_factor
         marker_radius = max(3, int(5 * marker_scale))
         marker_thickness = max(2, int(2 * marker_scale))
         for p in active_field:
@@ -120,7 +119,6 @@ def update_preview():
                   [0, zoom_factor, pan_y]])
     preview_img = cv2.warpAffine(result, M, (cols, rows))
     
-    # Try to get window size; if not available, use fallback
     try:
         winRect = cv2.getWindowImageRect(window_name)
         win_width, win_height = winRect[2], winRect[3]
@@ -175,7 +173,7 @@ def mouse_callback(event, x, y, flags, param):
             return
         return
 
-    # When not in adding mode, use left-click drag for panning.
+    # When not in adding mode, use left-drag for panning.
     if event == cv2.EVENT_LBUTTONDOWN:
         is_dragging = True
         drag_start = (x, y)
@@ -211,7 +209,7 @@ def nothing(x):
     update_preview()
 
 def open_image():
-    global orig_img, blur_fields, active_field, adding_mode, zoom_factor, pan_x, pan_y
+    global orig_img, blur_fields, active_field, adding_mode, zoom_factor, pan_x, pan_y, current_file_path
     file_path = filedialog.askopenfilename(
         parent=tk_root,
         title="Select an image",
@@ -231,6 +229,7 @@ def open_image():
         adding_mode = False
         zoom_factor = 1.0
         pan_x, pan_y = 0, 0
+        current_file_path = file_path  # store the loaded file path
         update_preview()
         cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
         cv2.waitKey(1)
@@ -239,7 +238,7 @@ def open_image():
 def save_image():
     global final_result
     if final_result is not None:
-        save_path = filedialog.asksaveasfilename(
+        file_path = filedialog.asksaveasfilename(
             parent=tk_root,
             title="Save image as",
             initialdir="~",
@@ -250,23 +249,34 @@ def save_image():
                 ("All Files", "*.*")
             ]
         )
-        if save_path:
-            cv2.imwrite(save_path, final_result)
-            print("Saved as", save_path)
+        if file_path:
+            cv2.imwrite(file_path, final_result)
+            print("Saved as", file_path)
         cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
         cv2.waitKey(1)
         cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 0)
 
+def save_overwrite():
+    global final_result, current_file_path
+    if final_result is None:
+        return
+    if current_file_path is None:
+        print("No original file to overwrite.")
+        return
+    cv2.imwrite(current_file_path, final_result)
+    print("Overwritten original file:", current_file_path)
+
 def main():
     global orig_img, adding_mode, active_field, blur_fields, effect_mode
     global zoom_factor, pan_x, pan_y, display_scale
+    global current_file_path
+    current_file_path = None
     default_path = "your_image.jpg"  # Replace with a valid default image or press 'o'
     orig_img = cv2.imread(default_path)
     
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(window_name, 800, 580)
-    # Force an initial update so the window geometry is set:
-    cv2.waitKey(50)
+    cv2.resizeWindow(window_name, 800, 601)
+    cv2.waitKey(50)  # Give time for window geometry to set
     cv2.setMouseCallback(window_name, mouse_callback)
     cv2.createTrackbar("Kernel", window_name, 50, 100, nothing)
     
@@ -277,7 +287,8 @@ def main():
     print("  o: Open an image")
     print("  a: Add a new field (left-click 4 points)")
     print("  r: Reset all fields")
-    print("  s: Save final image (via save dialog)")
+    print("  s: Save image via save dialog")
+    print("  Shift+S: Overwrite original file (save with same name)")
     print("  q: Quit")
     print("  Scroll Wheel: Zoom (centered on mouse)")
     print("  Left-drag: Pan the image (when not adding a field)")
@@ -291,6 +302,7 @@ def main():
     
     while True:
         key = cv2.waitKey(1) & 0xFF
+        # Lowercase 's' opens save dialog, Shift+S (capital S) overwrites
         if key == ord('o'):
             open_image()
         elif key == ord('a'):
@@ -306,6 +318,8 @@ def main():
             print("Reset all fields.")
         elif key == ord('s'):
             save_image()
+        elif key == ord('S'):
+            save_overwrite()
         elif key == ord('b'):
             effect_mode = "pixelate" if effect_mode == "blur" else "blur"
             print("Switched to:", effect_mode)
